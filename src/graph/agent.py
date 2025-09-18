@@ -37,15 +37,6 @@ checkpointer = MemorySaver()
 # TODO : Implement persistent storage with SQLite or Postgres
 
 
-
-event_extractor = create_extractor(
-    llm,
-    tools=[state_definitions.Event],
-    tool_choice="Event",
-    enable_inserts=True,
-)
-
-
 # ---------------------------------------------------------------------
 # Trustcall Instructions
 # ---------------------------------------------------------------------
@@ -335,3 +326,79 @@ def update_profile(state: state_definitions.ConversationState, config: RunnableC
     }
 
 
+def update_events(state: state_definitions.ConversationState, config: RunnableConfig, store: BaseStore):
+    """
+    Event Manager Agent node.
+    Reflects on conversation, updates Events in persistent memory.
+    """
+
+    # Get the user ID from the config
+    configurable = configuration.Configuration.from_runnable_config(config)
+    user_id = configurable.user_id
+
+    # Define namespace for events
+    namespace = ("event", user_id)
+
+    # Retrieve existing events (for context)
+    existing_items = store.search(namespace)
+    existing_memories = (
+        [(item.key, "Event", item.value) for item in existing_items]
+        if existing_items
+        else None
+    )
+
+    # Merge the chat history and the instruction
+    TRUSTCALL_INSTRUCTION_FORMATTED = TRUSTCALL_INSTRUCTION.format(
+        time=datetime.now().isoformat()
+    )
+    updated_messages = list(
+        merge_message_runs(
+            messages=[SystemMessage(content=TRUSTCALL_INSTRUCTION_FORMATTED)]
+            + state["messages"][:-1]
+        )
+    )
+
+    # Create the profile extractor
+    event_extractor = create_extractor(
+        llm,
+        tools=[state_definitions.Event],
+        tool_choice="Event",
+        enable_inserts=True,
+    )
+
+    # Run extraction using the global event_extractor
+    result = event_extractor.invoke(
+        {"messages": updated_messages, "existing": existing_memories}
+    )
+
+    # Save new/updated events
+    for r, rmeta in zip(result["responses"], result["response_metadata"]):
+        store.put(
+            namespace,
+            rmeta.get("json_doc_id", str(uuid.uuid4())),
+            r.model_dump(mode="json"),
+        )
+
+    # Build a light summary (just counts)
+    insert_count = sum(1 for m in result["response_metadata"] if m.get("is_insert", False))
+    update_count = len(result["response_metadata"]) - insert_count
+
+    lines = []
+    if insert_count:
+        lines.append(f"Added {insert_count} event(s).")
+    if update_count:
+        lines.append(f"Updated {update_count} event(s).")
+    summary_text = "\n".join(lines) if lines else "No event changes."
+
+    # Confirmation back to Conversation Agent
+    last_message = state["messages"][-1]
+    tool_call_id = getattr(last_message, "tool_calls", [{}])[0].get("id", "default_id")
+    return {
+        "messages": [
+            {
+                "role": "tool",
+                "content": summary_text,
+                "tool_call_id": tool_call_id,
+            }
+        ]
+    }
