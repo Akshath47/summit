@@ -6,35 +6,66 @@ Designed to manage interactions between different agents and components.
 Designed a graph structure to represent the relationships and data flow between agents.
 """
 
-import state_definitions
-import configuration
+from support import state_definitions
+from support import configuration
 import uuid
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, get_buffer_string
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, get_buffer_string, merge_message_runs
 from langchain_core.runnables import RunnableConfig
+from datetime import datetime
+from trustcall import create_extractor
 
 from langchain_openai import ChatOpenAI
 
-from langgraph.constants import Send
+from langgraph.types import Send
 from langgraph.store.base import BaseStore
 from langgraph.store.memory import InMemoryStore
-from langgraph.store.sqlite import SQLiteStore
-from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, MessagesState, START, StateGraph
 
 
 # ---------------------------------------------------------------------
-# LLM
+# Initialize model and tools
 # ---------------------------------------------------------------------
-llm = ChatOpenAI(model="gpt-4o", temperature=0) 
+
+# LLM setup
+llm = ChatOpenAI(model="gpt-4o", temperature=0)
+
+# Memory management
+store = InMemoryStore()
+checkpointer = MemorySaver()
+# TODO : Implement persistent storage with SQLite or Postgres
+
+# Create the Trustcall extractors for updating the user profile, ToDo list and events
+profile_extractor = create_extractor(
+    llm,
+    tools=[state_definitions.Profile],
+    tool_choice="Profile",
+    enable_inserts=True,
+)
+
+event_extractor = create_extractor(
+    llm,
+    tools=[state_definitions.Event],
+    tool_choice="Event",
+    enable_inserts=True,
+)
 
 
 # ---------------------------------------------------------------------
-# Memory Management
+# Trustcall Instructions
 # ---------------------------------------------------------------------
-store = SQLiteStore.from_file("memory.db")
-checkpointer = SqliteSaver.from_file("checkpoints.db")
+
+TRUSTCALL_INSTRUCTION = """
+Use the provided tools to extract or update information from the conversation.
+
+Current time: {time}
+
+Instructions:
+- Extract new or updated items based on the conversation
+- Update existing items if new information is provided
+- Only use the tools when relevant information is present
+"""
 
 
 # ---------------------------------------------------------------------
@@ -120,41 +151,121 @@ Your current instructions are:
 # Graph Nodes
 # ---------------------------------------------------------------------
 
-def conversation_agent(state: state_definitions.ConversationState, config: RunnableConfig, store: BaseStore):
+# def conversation_agent(state: state_definitions.ConversationState, config: RunnableConfig, store: BaseStore):
+#     """
+#     Docstring to be filled
+#     """
+
+#     # Get the user ID from the config
+#     configurable = configuration.Configuration.from_runnable_config(config)
+#     user_id = configurable.user_id
+
+#     # Retrieve profile memory from the store
+#     namespace = ("profile", user_id)
+#     memories = store.search(namespace)
+#     if memories:
+#         user_profile = memories[0].value
+#     else:
+#         user_profile = None
+
+#     # Retrieve todo memory from the store
+#     namespace = ("todo", user_id)
+#     memories = store.search(namespace)
+#     todo = "\n".join(f"{mem.value}" for mem in memories)
+
+#     # Retrieve event memory from the store
+#     namespace = ("event", user_id)
+#     memories = store.search(namespace)
+#     event = "\n".join(f"{mem.value}" for mem in memories)
+
+#     # Retrieve custom instructions
+#     namespace = ("instructions", user_id)
+#     memories = store.search(namespace)
+#     if memories:
+#         instructions = memories[0].value
+#     else:
+#         instructions = ""
+
+#     system_msg = MODEL_SYSTEM_MESSAGE.format(user_profile=user_profile, todo=todo, instructions=instructions)
+
+
+
+
+
+
+def update_todos(state: state_definitions.ConversationState, config: RunnableConfig, store: BaseStore):
     """
-    Docstring to be filled
+    Task Manager Agent node.
+    Reflects on conversation, updates ToDos in persistent memory, and confirms changes.
     """
 
     # Get the user ID from the config
     configurable = configuration.Configuration.from_runnable_config(config)
     user_id = configurable.user_id
 
-    # Retrieve profile memory from the store
-    namespace = ("profile", user_id)
-    memories = store.search(namespace)
-    if memories:
-        user_profile = memories[0].value
-    else:
-        user_profile = None
-
-    # Retrieve todo memory from the store
+    # Define namespace for todos
     namespace = ("todo", user_id)
-    memories = store.search(namespace)
-    todo = "\n".join(f"{mem.value}" for mem in memories)
 
-    # Retrieve event memory from the store
-    namespace = ("event", user_id)
-    memories = store.search(namespace)
-    event = "\n".join(f"{mem.value}" for mem in memories)
+    # Retrieve existing todos (for context)
+    existing_items = store.search(namespace)
+    existing_memories = (
+        [(item.key, "ToDo", item.value) for item in existing_items] if existing_items else None
+    )
 
-    # Retrieve custom instructions
-    namespace = ("instructions", user_id)
-    memories = store.search(namespace)
-    if memories:
-        instructions = memories[0].value
-    else:
-        instructions = ""
+    # Merge the chat history and the instruction
+    TRUSTCALL_INSTRUCTION_FORMATTED = TRUSTCALL_INSTRUCTION.format(
+        time=datetime.now().isoformat()
+    )
+    updated_messages = list(
+        merge_message_runs(
+            messages=[SystemMessage(content=TRUSTCALL_INSTRUCTION_FORMATTED)]
+            + state["messages"][:-1]
+        )
+    )
 
-    system_msg = MODEL_SYSTEM_MESSAGE.format(user_profile=user_profile, todo=todo, instructions=instructions)
+    # Create the todo extractor
+    todo_extractor = create_extractor(
+        llm,
+        tools=[state_definitions.ToDo],
+        tool_choice="ToDo",
+        enable_inserts=True,
+    )
+    
+    # Invoke the extractor
+    result = todo_extractor.invoke(
+        {"messages": updated_messages, "existing": existing_memories}
+    )
+
+    # Save save the memories from Trustcall to the store
+    for r, rmeta in zip(result["responses"], result["response_metadata"]):
+        store.put(
+            namespace,
+            rmeta.get("json_doc_id", str(uuid.uuid4())),
+            r.model_dump(mode="json"),
+        )
+
+    # Summaries by counts
+    insert_count = sum(1 for m in result["response_metadata"] if m.get("is_insert", False))
+    update_count = len(result["response_metadata"]) - insert_count
+
+    lines = []
+    if insert_count:
+        lines.append(f"Added {insert_count} task(s).")
+    if update_count:
+        lines.append(f"Updated {update_count} task(s).")
+    summary_text = "\n".join(lines) if lines else "No changes made."
+
+    # Confirmation back to Conversation Agent
+    last_message = state["messages"][-1]
+    tool_call_id = getattr(last_message, 'tool_calls', [{}])[0].get('id', 'default_id')
+    return {
+        "messages": [
+            {
+                "role": "tool",
+                "content": summary_text,
+                "tool_call_id": tool_call_id,
+            }
+        ]
+    }
 
 

@@ -55,7 +55,7 @@ class ToDo(BaseModel):
     )
     solutions: List[str] = Field(
         description="List of actionable ideas/steps for completing the task.",
-        min_items=1,
+        min_length=1,
         default_factory=list
     )
     status: Literal["not started", "in progress", "done", "archived"] = Field(
@@ -117,7 +117,6 @@ class Instructions(BaseModel):
     User-specific preferences for how tasks should be updated.
     Represented as a simple list of instruction strings.
     """
-    id: str = Field("user_instructions", description="Unique key for this user's instruction set")
     items: List[str] = Field(
         default_factory=list,
         description="List of user preferences as natural language instructions"
