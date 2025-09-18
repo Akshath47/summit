@@ -54,6 +54,20 @@ Instructions:
 
 
 # ---------------------------------------------------------------------
+# Custom User Instructions
+# ---------------------------------------------------------------------
+CREATE_INSTRUCTIONS = """Reflect on the following interaction.
+
+Based on this interaction, update your instructions for how to update ToDo list items. Use any feedback from the user to update how they like to have items added, etc.
+
+Your current instructions are:
+
+<current_instructions>
+{current_instructions}
+</current_instructions>"""
+
+
+# ---------------------------------------------------------------------
 # Agent Instructions
 # ---------------------------------------------------------------------
 
@@ -120,16 +134,14 @@ Always respond conversationally, then call tools when needed.
 """
 
 
-# Custom Instructions
-CREATE_INSTRUCTIONS = """Reflect on the following interaction.
+# Focus Coach Agent instructions
+FOCUS_INSTRUCTION = """Reflect on the following interaction.
 
-Based on this interaction, update your instructions for how to update ToDo list items. Use any feedback from the user to update how they like to have items added, etc.
-
-Your current instructions are:
-
-<current_instructions>
-{current_instructions}
-</current_instructions>"""
+Based on the user's mood and energy level:
+- Suggest one actionable next step.
+- Provide a short motivational message alongside it.
+- If relevant, tie the suggestion to a specific task (reference its ToDo.id).
+"""
 
 
 # ---------------------------------------------------------------------
@@ -295,7 +307,7 @@ def update_profile(state: state_definitions.ConversationState, config: RunnableC
         enable_inserts=True,
     )
 
-    # Run extraction using the global profile_extractor
+    # Invoke the extractor
     result = profile_extractor.invoke(
         {"messages": updated_messages, "existing": existing_memories}
     )
@@ -366,7 +378,7 @@ def update_events(state: state_definitions.ConversationState, config: RunnableCo
         enable_inserts=True,
     )
 
-    # Run extraction using the global event_extractor
+    # Invoke the extractor 
     result = event_extractor.invoke(
         {"messages": updated_messages, "existing": existing_memories}
     )
@@ -402,3 +414,61 @@ def update_events(state: state_definitions.ConversationState, config: RunnableCo
             }
         ]
     }
+
+
+def focus_coach(state: state_definitions.ConversationState, config: RunnableConfig, store: BaseStore):
+    """
+    Focus Coach Agent node.
+    Uses mood + energy signals to produce a FocusSuggestion,
+    which is later consumed by the Response Synthesizer.
+    """
+
+    # Get the user ID from the config (not really needed, but for consistency sake)
+    configurable = configuration.Configuration.from_runnable_config(config)
+    user_id = configurable.user_id
+
+    # Prepare messages
+    updated_messages = list(
+        merge_message_runs(
+            messages=[SystemMessage(content=FOCUS_INSTRUCTION)]
+            + state["messages"][:-1]
+        )
+    )
+
+    # Create the FocusSuggestion extractor
+    focus_extractor = create_extractor(
+        llm,
+        tools=[state_definitions.FocusSuggestion],
+        tool_choice="FocusSuggestion",
+        enable_inserts=True,
+    )
+
+    # Invoke the extractor
+    result = focus_extractor.invoke({"messages": updated_messages, "existing": None})
+
+    # Collect structured output for the synthesizer
+    if result["responses"]:
+        r = result["responses"][0]
+
+        if hasattr(r, "model_dump"):
+            data = r.model_dump()
+        elif isinstance(r, dict):
+            data = r
+        else:
+            data = {}
+
+        content = {
+            "suggestion": data.get("suggestion"),
+            "motivation": data.get("motivation"),
+        }
+    else:
+        content = {"suggestion": None, "motivation": None}
+
+    # Ensure required list fields are always lists (not None)
+    return state_definitions.SynthesizerInput(
+        **content,
+        updated_task_ids=[],
+        event_ids=[],
+        conflict_ids=[]
+    )
+
