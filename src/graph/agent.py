@@ -36,13 +36,7 @@ store = InMemoryStore()
 checkpointer = MemorySaver()
 # TODO : Implement persistent storage with SQLite or Postgres
 
-# Create the Trustcall extractors for updating the user profile, ToDo list and events
-profile_extractor = create_extractor(
-    llm,
-    tools=[state_definitions.Profile],
-    tool_choice="Profile",
-    enable_inserts=True,
-)
+
 
 event_extractor = create_extractor(
     llm,
@@ -258,6 +252,78 @@ def update_todos(state: state_definitions.ConversationState, config: RunnableCon
     # Confirmation back to Conversation Agent
     last_message = state["messages"][-1]
     tool_call_id = getattr(last_message, 'tool_calls', [{}])[0].get('id', 'default_id')
+    return {
+        "messages": [
+            {
+                "role": "tool",
+                "content": summary_text,
+                "tool_call_id": tool_call_id,
+            }
+        ]
+    }
+
+
+def update_profile(state: state_definitions.ConversationState, config: RunnableConfig, store: BaseStore):
+    """
+    Profile Update Agent node.
+    Reflects on conversation, updates Profile in persistent memory.
+    """
+
+    # Get the user ID from the config
+    configurable = configuration.Configuration.from_runnable_config(config)
+    user_id = configurable.user_id
+
+    # Define namespace for profile
+    namespace = ("profile", user_id)
+
+    # Retrieve existing profile (for context)
+    # There is only one profile but we are using plural naming for consistency across trustcall calls
+    existing_items = store.search(namespace)
+    existing_memories = (
+        [(item.key, "Profile", item.value) for item in existing_items]
+        if existing_items
+        else None
+    )
+
+    # Merge the chat history and the instruction
+    TRUSTCALL_INSTRUCTION_FORMATTED = TRUSTCALL_INSTRUCTION.format(
+        time=datetime.now().isoformat()
+    )
+    updated_messages = list(
+        merge_message_runs(
+            messages=[SystemMessage(content=TRUSTCALL_INSTRUCTION_FORMATTED)]
+            + state["messages"][:-1]
+        )
+    )
+
+    # Create the profile extractor
+    profile_extractor = create_extractor(
+        llm,
+        tools=[state_definitions.Profile],
+        tool_choice="Profile",
+        enable_inserts=True,
+    )
+
+    # Run extraction using the global profile_extractor
+    result = profile_extractor.invoke(
+        {"messages": updated_messages, "existing": existing_memories}
+    )
+
+    # Save save the memories from Trustcall to the store
+    summaries = []
+    for r, rmeta in zip(result["responses"], result["response_metadata"]):
+        store.put(
+            namespace,
+            rmeta.get("json_doc_id", str(uuid.uuid4())),
+            r.model_dump(mode="json"),
+        )
+        summaries.append("Profile updated.")
+
+    summary_text = "\n".join(summaries) if summaries else "No profile changes."
+
+    # Confirmation back to Conversation Agent
+    last_message = state["messages"][-1]
+    tool_call_id = getattr(last_message, "tool_calls", [{}])[0].get("id", "default_id")
     return {
         "messages": [
             {
