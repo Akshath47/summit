@@ -9,13 +9,14 @@ It personalizes responses, maintains a profile of the user, and provides actiona
 
 ### 1. Conversation Agent
 - Parses the user’s natural message into structured data.  
-- Extracts tasks, deadlines, profile updates, and mood/energy signals.  
-- **Outputs:** Parsed tasks, mood, profile updates.  
+- Extracts tasks, deadlines, profile updates, mood/energy signals, and preferences about how tasks should be handled.  
+- **Outputs:** Parsed tasks, mood, profile updates, instruction update requests.  
 - **Next Nodes:**  
   - Task Manager Agent  
   - Scheduler Agent  
   - Profile Update Agent  
-  - Focus Coach Agent
+  - Focus Coach Agent  
+  - Instructions Update Agent
 
 ---
 
@@ -50,13 +51,24 @@ It personalizes responses, maintains a profile of the user, and provides actiona
 
 ---
 
-### 6. Response Synthesizer
+### 6. Instructions Update Agent
+- Reflects on conversation to capture **user-specific preferences** about how tasks should be updated or managed.  
+- Examples:  
+  - “Always ask me before adding new tasks.”  
+  - “Mark things as high priority if I say urgent.”  
+  - “Add estimated completion time automatically.”  
+- **Outputs:** Updated list of user preferences (persisted).
+
+---
+
+### 7. Response Synthesizer
 - Gathers outputs from all other agents.  
 - Produces a **final natural-language reply** to the user.  
 - Explains:  
   - ✅ What tasks/profile were updated  
   - 📅 What was scheduled / conflicts detected  
   - 💡 Suggested next action and motivation  
+  - ⚙️ Any updates to task-handling preferences  
 
 ---
 
@@ -70,10 +82,12 @@ graph TD
     B --> D[Scheduler Agent]
     B --> E[Profile Update Agent]
     B --> F[Focus Coach Agent]
+    B --> I[Instructions Update Agent]
 
     C --> G[Response Synthesizer]
     D --> G
     E --> G
     F --> G
+    I --> G
 
     G --> H[END]

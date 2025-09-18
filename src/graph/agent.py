@@ -10,7 +10,7 @@ from support import state_definitions
 from support import configuration
 import uuid
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, get_buffer_string, merge_message_runs
+from langchain_core.messages import HumanMessage, SystemMessage, merge_message_runs
 from langchain_core.runnables import RunnableConfig
 from datetime import datetime
 from trustcall import create_extractor
@@ -56,6 +56,7 @@ Instructions:
 # ---------------------------------------------------------------------
 # Custom User Instructions
 # ---------------------------------------------------------------------
+
 CREATE_INSTRUCTIONS = """Reflect on the following interaction.
 
 Based on this interaction, update your instructions for how to update ToDo list items. Use any feedback from the user to update how they like to have items added, etc.
@@ -472,3 +473,52 @@ def focus_coach(state: state_definitions.ConversationState, config: RunnableConf
         conflict_ids=[]
     )
 
+
+def update_instructions(state: state_definitions.ConversationState, config: RunnableConfig, store: BaseStore):
+    """
+    Instructions Update Agent node.
+    Updates user preferences for how ToDos should be added/handled.
+    """
+
+    # Get the user ID from the config
+    configurable = configuration.Configuration.from_runnable_config(config)
+    user_id = configurable.user_id
+
+    # Define namespace for instructions
+    namespace = ("instructions", user_id)
+
+    # Retrieve existing instructions (list of strings)
+    existing_memory = store.get(namespace, "user_instructions")
+    current_instructions = existing_memory.value if existing_memory else []
+
+    # Format system prompt
+    system_msg = CREATE_INSTRUCTIONS.format(
+        current_instructions="\n".join(current_instructions) if current_instructions else "None"
+    )
+
+    # Bind instructions schema to the LLM
+    instructions_model = llm.with_structured_output(state_definitions.Instructions)
+
+    # Ask the model for updated instructions (schema-bound)
+    result = instructions_model.invoke(
+        [SystemMessage(content=system_msg)]
+        + state["messages"][:-1]
+        + [HumanMessage(content="Please update the instructions based on this conversation")]
+    )
+
+    # Save updated list directly
+    store.put(namespace, "user_instructions", {"items": result.items})
+
+    # Confirm back to Conversation Agent
+    last_message = state["messages"][-1]
+    tool_calls = getattr(last_message, "tool_calls", None) or []
+    tool_call_id = tool_calls[0]["id"] if tool_calls else "default_id"
+    return {
+        "messages": [
+            {
+                "role": "tool",
+                "content": "Updated your preferences for managing tasks.",
+                "tool_call_id": tool_call_id,
+            }
+        ]
+    }
