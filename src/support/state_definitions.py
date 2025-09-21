@@ -8,11 +8,12 @@ Defines the states and tool schemas for the multi-agent LangGraph workflow.
 - The other schemas are agent specific input and output schemas 
 """
 
-from langgraph.graph import MessagesState
+from langgraph.graph import MessagesState, add_messages
 from pydantic import BaseModel, Field
-from typing import Optional, List, Literal
+from typing import Optional, List, Literal, Annotated
 from datetime import datetime
 import uuid
+from langchain_core.messages import BaseMessage
 
 
 # ---------------------------------------------------------------------
@@ -165,7 +166,13 @@ class SynthesizerInput(BaseModel):
     suggestion: Optional[str] = None   # Next action
     motivation: Optional[str] = None   
 
-class ResponseState(MessagesState):
-    """Final response returned to the user."""
-    reply: str
+from typing import TypedDict
+
+class GlobalState(TypedDict):
+    """
+    A global state that includes both conversation messages and synthesizer inputs.
+    This allows nodes to update both states simultaneously.
+    """
+    messages: Annotated[List[BaseMessage], add_messages]
+    synth_input: SynthesizerInput
 

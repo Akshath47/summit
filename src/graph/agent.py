@@ -10,7 +10,7 @@ from support import state_definitions
 from support import configuration
 import uuid
 
-from langchain_core.messages import HumanMessage, SystemMessage, merge_message_runs
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage, AIMessage, merge_message_runs
 from langchain_core.runnables import RunnableConfig
 from datetime import datetime
 from trustcall import create_extractor
@@ -206,7 +206,7 @@ Guidelines:
 
 
 
-def update_todos(state: state_definitions.ConversationState, config: RunnableConfig, store: BaseStore):
+def update_todos(state: state_definitions.GlobalState, config: RunnableConfig, store: BaseStore):
     """
     Task Manager Agent node.
     Reflects on conversation, updates ToDos in persistent memory, and confirms changes.
@@ -257,6 +257,9 @@ def update_todos(state: state_definitions.ConversationState, config: RunnableCon
             r.model_dump(mode="json"),
         )
 
+    # Collect updated task IDs for synthesizer
+    updated_task_ids = [rmeta.get("json_doc_id", str(uuid.uuid4())) for _, rmeta in zip(result["responses"], result["response_metadata"])]
+
     # Summaries by counts
     insert_count = sum(1 for m in result["response_metadata"] if m.get("is_insert", False))
     update_count = len(result["response_metadata"]) - insert_count
@@ -271,18 +274,22 @@ def update_todos(state: state_definitions.ConversationState, config: RunnableCon
     # Confirmation back to Conversation Agent
     last_message = state["messages"][-1]
     tool_call_id = getattr(last_message, 'tool_calls', [{}])[0].get('id', 'default_id')
-    return {
-        "messages": [
-            {
-                "role": "tool",
-                "content": summary_text,
-                "tool_call_id": tool_call_id,
-            }
-        ]
-    }
+
+    # Merge synthesizer input
+    new_synth_input = state["synth_input"].model_copy(update={"updated_task_ids": state["synth_input"].updated_task_ids + updated_task_ids})
+
+    return state_definitions.GlobalState(
+        messages=[
+            ToolMessage(
+                content=summary_text, 
+                tool_call_id=tool_call_id
+            )
+        ],
+        synth_input=new_synth_input
+    )
 
 
-def update_profile(state: state_definitions.ConversationState, config: RunnableConfig, store: BaseStore):
+def update_profile(state: state_definitions.GlobalState, config: RunnableConfig, store: BaseStore):
     """
     Profile Update Agent node.
     Reflects on conversation, updates Profile in persistent memory.
@@ -338,23 +345,30 @@ def update_profile(state: state_definitions.ConversationState, config: RunnableC
         )
         summaries.append("Profile updated.")
 
+    # Collect profile changes for synthesizer
+    profile_changes = result["responses"][0].model_dump(mode="json") if result["responses"] else None
+
     summary_text = "\n".join(summaries) if summaries else "No profile changes."
 
     # Confirmation back to Conversation Agent
     last_message = state["messages"][-1]
     tool_call_id = getattr(last_message, "tool_calls", [{}])[0].get("id", "default_id")
-    return {
-        "messages": [
-            {
-                "role": "tool",
-                "content": summary_text,
-                "tool_call_id": tool_call_id,
-            }
-        ]
-    }
+
+    # Merge synthesizer input
+    new_synth_input = state["synth_input"].model_copy(update={"profile_changes": profile_changes})
+
+    return state_definitions.GlobalState(
+        messages=[
+            ToolMessage(
+                content=summary_text, 
+                tool_call_id=tool_call_id
+            )
+        ],
+        synth_input=new_synth_input
+    )
 
 
-def update_events(state: state_definitions.ConversationState, config: RunnableConfig, store: BaseStore):
+def update_events(state: state_definitions.GlobalState, config: RunnableConfig, store: BaseStore):
     """
     Event Manager Agent node.
     Reflects on conversation, updates Events in persistent memory.
@@ -407,6 +421,9 @@ def update_events(state: state_definitions.ConversationState, config: RunnableCo
             r.model_dump(mode="json"),
         )
 
+    # Collect updated event IDs for synthesizer
+    updated_event_ids = [rmeta.get("json_doc_id", str(uuid.uuid4())) for _, rmeta in zip(result["responses"], result["response_metadata"])]
+
     # Build a light summary (just counts)
     insert_count = sum(1 for m in result["response_metadata"] if m.get("is_insert", False))
     update_count = len(result["response_metadata"]) - insert_count
@@ -421,18 +438,19 @@ def update_events(state: state_definitions.ConversationState, config: RunnableCo
     # Confirmation back to Conversation Agent
     last_message = state["messages"][-1]
     tool_call_id = getattr(last_message, "tool_calls", [{}])[0].get("id", "default_id")
-    return {
-        "messages": [
-            {
-                "role": "tool",
-                "content": summary_text,
-                "tool_call_id": tool_call_id,
-            }
-        ]
-    }
+
+    # Merge synthesizer input
+    new_synth_input = state["synth_input"].model_copy(update={"event_ids": state["synth_input"].event_ids + updated_event_ids})
+
+    return state_definitions.GlobalState(
+        messages=[
+            ToolMessage(content=summary_text, tool_call_id=tool_call_id)
+        ],
+        synth_input=new_synth_input
+    )
 
 
-def focus_coach(state: state_definitions.ConversationState, config: RunnableConfig, store: BaseStore):
+def focus_coach(state: state_definitions.GlobalState, config: RunnableConfig, store: BaseStore):
     """
     Focus Coach Agent node.
     Uses mood + energy signals to produce a FocusSuggestion,
@@ -481,11 +499,11 @@ def focus_coach(state: state_definitions.ConversationState, config: RunnableConf
         content = {"suggestion": None, "motivation": None}
 
     # Ensure required list fields are always lists (not None)
-    return state_definitions.SynthesizerInput(
-        **content,
-        updated_task_ids=[],
-        event_ids=[],
-        conflict_ids=[]
+    new_synth_input = state["synth_input"].model_copy(update=content)
+
+    return state_definitions.GlobalState(
+        messages=[],
+        synth_input=new_synth_input
     )
 
 
@@ -540,7 +558,7 @@ def update_instructions(state: state_definitions.ConversationState, config: Runn
 
 
 def response_synthesizer(
-    state: state_definitions.SynthesizerInput,
+    state: state_definitions.GlobalState,
     config: RunnableConfig,
     store: BaseStore,
 ):
@@ -559,14 +577,14 @@ def response_synthesizer(
         return records
 
     # Gather structured updates
-    todos = load_records("todo", state.updated_task_ids)
-    events = load_records("event", state.event_ids)
-    conflicts = state.conflict_ids or []
+    todos = load_records("todo", state["synth_input"].updated_task_ids)
+    events = load_records("event", state["synth_input"].event_ids)
+    conflicts = state["synth_input"].conflict_ids or []
 
     # Focus agent outputs
     focus = {
-        "suggestion": state.suggestion,
-        "motivation": state.motivation,
+        "suggestion": state["synth_input"].suggestion,
+        "motivation": state["synth_input"].motivation,
     }
 
     # Build input context
@@ -588,16 +606,16 @@ def response_synthesizer(
         ]
     ).content
 
-    return {
-        "messages": [
-            {"role": "assistant", "content": reply}
-        ]
-    }
+    return state_definitions.GlobalState(
+        messages=[
+            AIMessage(content=reply)
+        ],
+        synth_input=state["synth_input"]
+    )
 
 
 
-
-
+# TODO : Refresh synthesizer input to be cleared at the start of every run
 # TODO : Complete conversation agent node to call the above nodes as needed
 # TODO : Create routing function and logic
 # TODO : Update the conversation agent to call update instructions agent whenever fit
