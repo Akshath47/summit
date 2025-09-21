@@ -145,6 +145,21 @@ Based on the user's mood and energy level:
 """
 
 
+# Response Synthesizer instructions
+SYNTHESIZER_INSTRUCTION = """You are a helpful, conversational assistant. 
+Your job is to generate a single natural-language reply for the user, based on updates from other agents.
+
+Guidelines:
+- Always respond in a way that feels like a natural continuation of the conversation. 
+- If the user is simply chatting or making small talk, reply normally without forcing task updates.
+- If tasks or events were added/updated, briefly and naturally let the user know. 
+- If scheduling conflicts were detected, politely mention them. 
+- If focus suggestions or motivational nudges are available AND the user seems to be asking for help, weave them into your reply in a friendly, supportive way.
+- Never mention updates to the user profile or task-handling preferences explicitly.
+- Be concise, conversational, and supportive — avoid sounding like a system log or checklist.
+"""
+
+
 # ---------------------------------------------------------------------
 # Graph Nodes
 # ---------------------------------------------------------------------
@@ -522,3 +537,67 @@ def update_instructions(state: state_definitions.ConversationState, config: Runn
             }
         ]
     }
+
+
+def response_synthesizer(
+    state: state_definitions.SynthesizerInput,
+    config: RunnableConfig,
+    store: BaseStore,
+):
+    """Use the LLM to synthesize a natural-language response for the user."""
+
+    configurable = configuration.Configuration.from_runnable_config(config)
+    user_id = configurable.user_id
+
+    def load_records(namespace_key, keys):
+        namespace = (namespace_key, user_id)
+        records = []
+        for k in keys or []:
+            mem = store.get(namespace, k)
+            if mem:
+                records.append(mem.value)
+        return records
+
+    # Gather structured updates
+    todos = load_records("todo", state.updated_task_ids)
+    events = load_records("event", state.event_ids)
+    conflicts = state.conflict_ids or []
+
+    # Focus agent outputs
+    focus = {
+        "suggestion": state.suggestion,
+        "motivation": state.motivation,
+    }
+
+    # Build input context
+    context = {
+        "tasks": [t.get("task", "a task") for t in todos],
+        "events": [
+            {"title": e.get("title", "an event"), "time": e.get("time")}
+            for e in events
+        ],
+        "conflicts": len(conflicts),
+        "focus": focus,
+    }
+
+    # Call LLM
+    reply = llm.invoke(
+        [
+            SystemMessage(content=SYNTHESIZER_INSTRUCTION),
+            HumanMessage(content=f"Here are the updates: {context}")
+        ]
+    ).content
+
+    return {
+        "messages": [
+            {"role": "assistant", "content": reply}
+        ]
+    }
+
+
+
+
+
+# TODO : Complete conversation agent node to call the above nodes as needed
+# TODO : Create routing function and logic
+# TODO : Update the conversation agent to call update instructions agent whenever fit
