@@ -164,42 +164,59 @@ Guidelines:
 # Graph Nodes
 # ---------------------------------------------------------------------
 
-# def conversation_agent(state: state_definitions.ConversationState, config: RunnableConfig, store: BaseStore):
-#     """
-#     Docstring to be filled
-#     """
+def conversation_agent(state: state_definitions.GlobalState, config: RunnableConfig, store: BaseStore):
+    """
+    Conversation Agent node.
+    Parses user message, decides which agents to invoke, and clears synth_input for fresh run.
+    """
 
-#     # Get the user ID from the config
-#     configurable = configuration.Configuration.from_runnable_config(config)
-#     user_id = configurable.user_id
+    # Clear synthesizer input at the start of every run
+    synth_input = state_definitions.SynthesizerInput()
 
-#     # Retrieve profile memory from the store
-#     namespace = ("profile", user_id)
-#     memories = store.search(namespace)
-#     if memories:
-#         user_profile = memories[0].value
-#     else:
-#         user_profile = None
+    # Get the user ID from the config
+    configurable = configuration.Configuration.from_runnable_config(config)
+    user_id = configurable.user_id
 
-#     # Retrieve todo memory from the store
-#     namespace = ("todo", user_id)
-#     memories = store.search(namespace)
-#     todo = "\n".join(f"{mem.value}" for mem in memories)
+    # Retrieve profile memory from the store
+    namespace = ("profile", user_id)
+    memories = store.search(namespace)
+    if memories:
+        user_profile = memories[0].value
+    else:
+        user_profile = None
 
-#     # Retrieve event memory from the store
-#     namespace = ("event", user_id)
-#     memories = store.search(namespace)
-#     event = "\n".join(f"{mem.value}" for mem in memories)
+    # Retrieve todo memory from the store
+    namespace = ("todo", user_id)
+    memories = store.search(namespace)
+    todo = "\n".join(f"{mem.value}" for mem in memories)
 
-#     # Retrieve custom instructions
-#     namespace = ("instructions", user_id)
-#     memories = store.search(namespace)
-#     if memories:
-#         instructions = memories[0].value
-#     else:
-#         instructions = ""
+    # Retrieve event memory from the store
+    namespace = ("event", user_id)
+    memories = store.search(namespace)
+    event = "\n".join(f"{mem.value}" for mem in memories)
 
-#     system_msg = MODEL_SYSTEM_MESSAGE.format(user_profile=user_profile, todo=todo, instructions=instructions)
+    # Retrieve custom instructions
+    namespace = ("instructions", user_id)
+    memories = store.search(namespace)
+    if memories:
+        instructions = memories[0].value
+    else:
+        instructions = ""
+
+    # For now, send to all agents as per plan
+    # TODO: Implement LLM-based routing based on message content
+    agent_state = state_definitions.GlobalState(
+        messages=state["messages"],
+        synth_input=synth_input
+    )
+
+    return [
+        Send("update_todos", agent_state),
+        Send("update_events", agent_state),
+        Send("update_profile", agent_state),
+        Send("focus_coach", agent_state),
+        Send("update_instructions", agent_state),
+    ]
 
 
 
@@ -615,7 +632,6 @@ def response_synthesizer(
 
 
 
-# TODO : Refresh synthesizer input to be cleared at the start of every run
-# TODO : Complete conversation agent node to call the above nodes as needed
+# TODO : Complete conversation agent node with LLM-based routing
 # TODO : Create routing function and logic
 # TODO : Update the conversation agent to call update instructions agent whenever fit
