@@ -160,9 +160,9 @@ class SynthesizerInput(BaseModel):
     Aggregated info from all agents that the Response Synthesizer
     will turn into a natural reply string.
     """
-    updated_task_ids: List[str] = []   # Which tasks got created/updated
-    event_ids: List[str] = []          # Which events were created/updated
-    conflict_ids: List[str] = []       # Events in conflict (if any)
+    updated_task_ids: List[str] = Field(default_factory=list)   # Which tasks got created/updated
+    event_ids: List[str] = Field(default_factory=list)          # Which events were created/updated
+    conflict_ids: List[str] = Field(default_factory=list)       # Events in conflict (if any)
     profile_changes: Optional[dict] = None 
     suggestion: Optional[str] = None   # Next action
     motivation: Optional[str] = None   
@@ -205,4 +205,3 @@ class GlobalState(TypedDict):
     """
     messages: Annotated[List[BaseMessage], add_messages]
     synth_input: SynthesizerInput
-
