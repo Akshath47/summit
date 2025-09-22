@@ -110,7 +110,7 @@ Your only job is to decide how to handle the latest user message by routing it t
 Return a single JSON object with:
 - disposition: one of ["reply","clarify","dispatch"]
 - targets: list of ["todo","event","profile","instructions","focus"] (empty if not dispatching)
-- conversational_reply: short, friendly text (for reply/clarify) or a brief acknowledgment ("On it — working on that now.") for dispatch
+- conversational_reply: short, friendly text (for reply/clarify) or a brief acknowledgment for dispatch
 
 Never include anything else in the output.
 

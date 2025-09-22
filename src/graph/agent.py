@@ -6,9 +6,9 @@ Designed to manage interactions between different agents and components.
 Designed a graph structure to represent the relationships and data flow between agents.
 """
 
-from support import state_definitions
-from support import configuration
-from support import prompts
+from src.support import state_definitions
+from src.support import configuration
+from src.support import prompts
 import uuid
 
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage, AIMessage, merge_message_runs
@@ -18,7 +18,7 @@ from trustcall import create_extractor
 
 from langchain_openai import ChatOpenAI
 
-from langgraph.types import Send
+from langgraph.types import Send, Command
 from langgraph.store.base import BaseStore
 from langgraph.store.memory import InMemoryStore
 from langgraph.checkpoint.memory import MemorySaver
@@ -106,35 +106,23 @@ def conversation_agent(state: state_definitions.GlobalState, config: RunnableCon
         "focus": "focus_coach",
     }
 
-    # Prepare fan-out sends if dispatching
+    # Store the decision in state for the conditional edge to use
+    # Return short acknowledgment for dispatch, or full reply for reply/clarify
     if getattr(decision, "disposition", None) == "dispatch":
-        sends = []
-        for t in getattr(decision, "targets", []) or []:
-            node_name = target_to_node.get(t)
-            if node_name:
-                sends.append(
-                    Send(
-                        node_name,
-                        state_definitions.GlobalState(
-                            messages=state["messages"],
-                            synth_input=synth_input
-                        ),
-                    )
-                )
-
-        # Return short acknowledgment now; final reply comes from response_synthesizer
         ack = getattr(decision, "conversational_reply", None) or "On it — working on that now."
         return {
             "messages": [AIMessage(content=ack)],
             "synth_input": synth_input,
-        } | {"__sends__": sends}
-
-    # Reply or Clarify: send friendly message, no dispatch
-    reply_text = getattr(decision, "conversational_reply", None) or "Okay."
-    return {
-        "messages": [AIMessage(content=reply_text)],
-        "synth_input": synth_input,
-    } | {"__sends__": []}
+            "router_decision": decision,  # Store decision for conditional edge
+        }
+    else:
+        # Reply or Clarify: send friendly message, no dispatch
+        reply_text = getattr(decision, "conversational_reply", None) or "Okay."
+        return {
+            "messages": [AIMessage(content=reply_text)],
+            "synth_input": synth_input,
+            "router_decision": decision,  # Store decision for conditional edge
+        }
 
 
 def update_todos(state: state_definitions.GlobalState, config: RunnableConfig, store: BaseStore):
@@ -209,15 +197,15 @@ def update_todos(state: state_definitions.GlobalState, config: RunnableConfig, s
     # Merge synthesizer input
     new_synth_input = state["synth_input"].model_copy(update={"updated_task_ids": state["synth_input"].updated_task_ids + updated_task_ids})
 
-    return state_definitions.GlobalState(
-        messages=[
+    return {
+        "messages": [
             ToolMessage(
-                content=summary_text, 
+                content=summary_text,
                 tool_call_id=tool_call_id
             )
         ],
-        synth_input=new_synth_input
-    )
+        "synth_input": new_synth_input
+    }
 
 
 def update_profile(state: state_definitions.GlobalState, config: RunnableConfig, store: BaseStore):
@@ -288,15 +276,15 @@ def update_profile(state: state_definitions.GlobalState, config: RunnableConfig,
     # Merge synthesizer input
     new_synth_input = state["synth_input"].model_copy(update={"profile_changes": profile_changes})
 
-    return state_definitions.GlobalState(
-        messages=[
+    return {
+        "messages": [
             ToolMessage(
-                content=summary_text, 
+                content=summary_text,
                 tool_call_id=tool_call_id
             )
         ],
-        synth_input=new_synth_input
-    )
+        "synth_input": new_synth_input
+    }
 
 
 def update_events(state: state_definitions.GlobalState, config: RunnableConfig, store: BaseStore):
@@ -373,12 +361,12 @@ def update_events(state: state_definitions.GlobalState, config: RunnableConfig, 
     # Merge synthesizer input
     new_synth_input = state["synth_input"].model_copy(update={"event_ids": state["synth_input"].event_ids + updated_event_ids})
 
-    return state_definitions.GlobalState(
-        messages=[
+    return {
+        "messages": [
             ToolMessage(content=summary_text, tool_call_id=tool_call_id)
         ],
-        synth_input=new_synth_input
-    )
+        "synth_input": new_synth_input
+    }
 
 
 def focus_coach(state: state_definitions.GlobalState, config: RunnableConfig, store: BaseStore):
@@ -432,13 +420,13 @@ def focus_coach(state: state_definitions.GlobalState, config: RunnableConfig, st
     # Ensure required list fields are always lists (not None)
     new_synth_input = state["synth_input"].model_copy(update=content)
 
-    return state_definitions.GlobalState(
-        messages=[],
-        synth_input=new_synth_input
-    )
+    return {
+        "messages": [],
+        "synth_input": new_synth_input
+    }
 
 
-def update_instructions(state: state_definitions.ConversationState, config: RunnableConfig, store: BaseStore):
+def update_instructions(state: state_definitions.GlobalState, config: RunnableConfig, store: BaseStore):
     """
     Instructions Update Agent node.
     Updates user preferences for how ToDos should be added/handled.
@@ -477,14 +465,15 @@ def update_instructions(state: state_definitions.ConversationState, config: Runn
     last_message = state["messages"][-1]
     tool_calls = getattr(last_message, "tool_calls", None) or []
     tool_call_id = tool_calls[0]["id"] if tool_calls else "default_id"
+    
     return {
         "messages": [
-            {
-                "role": "tool",
-                "content": "Updated your preferences for managing tasks.",
-                "tool_call_id": tool_call_id,
-            }
-        ]
+            ToolMessage(
+                content="Updated your preferences for managing tasks.",
+                tool_call_id=tool_call_id,
+            )
+        ],
+        "synth_input": state["synth_input"]
     }
 
 
@@ -537,12 +526,94 @@ def response_synthesizer(
         ]
     ).content
 
-    return state_definitions.GlobalState(
-        messages=[
+    return {
+        "messages": [
             AIMessage(content=reply)
         ],
-        synth_input=state["synth_input"]
-    )
+        "synth_input": state["synth_input"]
+    }
 
+
+# ---------------------------------------------------------------------
+# Conditional Edge Functions
+# ---------------------------------------------------------------------
+
+def route_conversation_agent(state: state_definitions.GlobalState):
+    """
+    Conditional edge function that returns Send objects based on router decision.
+    This is where the Send pattern should be implemented according to LangGraph docs.
+    """
+    decision = state.get("router_decision")
+    if not decision:
+        return END
+    
+    # Map targets to node names
+    target_to_node = {
+        "todo": "update_todos",
+        "event": "update_events",
+        "profile": "update_profile",
+        "instructions": "update_instructions",
+        "focus": "focus_coach",
+    }
+    
+    if getattr(decision, "disposition", None) == "dispatch":
+        # Return Send objects for each target
+        sends = []
+        for t in getattr(decision, "targets", []) or []:
+            node_name = target_to_node.get(t)
+            if node_name:
+                # Send the current state to each target node
+                sends.append(Send(node_name, state))
+        return sends
+    else:
+        # For reply or clarify, end the conversation
+        return END
+
+
+# ---------------------------------------------------------------------
+# Build the Graph
+# ---------------------------------------------------------------------
+
+# Create the graph + all nodes
+builder = StateGraph(state_definitions.GlobalState)
+
+# Define the nodes (sub agents)
+builder.add_node("conversation_agent", conversation_agent)
+builder.add_node("update_todos", update_todos)
+builder.add_node("update_events", update_events)
+builder.add_node("update_profile", update_profile)
+builder.add_node("update_instructions", update_instructions)
+builder.add_node("focus_coach", focus_coach)
+builder.add_node("response_synthesizer", response_synthesizer)
+
+# Define the edges (data flow)
+builder.add_edge(START, "conversation_agent")
+
+# Use conditional edge with Send objects for dynamic dispatch
+# Path map defines the possible paths from the conditional edge
+path_map = [
+    "update_todos",
+    "update_events",
+    "update_profile",
+    "update_instructions",
+    "focus_coach",
+    END
+]
+
+builder.add_conditional_edges("conversation_agent", route_conversation_agent, path_map)
+
+# All sub agents converge back into synthesizer agent
+builder.add_edge("update_todos", "response_synthesizer")
+builder.add_edge("update_events", "response_synthesizer")
+builder.add_edge("update_profile", "response_synthesizer")
+builder.add_edge("update_instructions", "response_synthesizer")
+builder.add_edge("focus_coach", "response_synthesizer")
+
+# Response synthesizer ends the flow
+builder.add_edge("response_synthesizer", END)
+
+# Compile the graph
+# graph = builder.compile(checkpointer=checkpointer, store=store)
+graph = builder.compile()
 
 # TODO : Client side streaming of messages to get partial updates on tool calls

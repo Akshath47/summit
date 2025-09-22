@@ -205,3 +205,4 @@ class GlobalState(TypedDict):
     """
     messages: Annotated[List[BaseMessage], add_messages]
     synth_input: SynthesizerInput
+    router_decision: Optional["RouterDecision"]
