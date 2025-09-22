@@ -168,6 +168,20 @@ class SynthesizerInput(BaseModel):
     motivation: Optional[str] = None   
 
 
+def merge_synth_inputs(left: SynthesizerInput, right: SynthesizerInput) -> SynthesizerInput:
+    """
+    Custom reducer to merge multiple SynthesizerInput updates from concurrent agents.
+    """
+    return SynthesizerInput(
+        updated_task_ids=left.updated_task_ids + right.updated_task_ids,
+        event_ids=left.event_ids + right.event_ids,
+        conflict_ids=left.conflict_ids + right.conflict_ids,
+        profile_changes=right.profile_changes or left.profile_changes,
+        suggestion=right.suggestion or left.suggestion,
+        motivation=right.motivation or left.motivation,
+    )
+
+
 # ---------------------------------------------------------------------
 # Router Decision (LLM-first routing contract)
 # ---------------------------------------------------------------------
@@ -204,5 +218,5 @@ class GlobalState(TypedDict):
     This allows nodes to update both states simultaneously.
     """
     messages: Annotated[List[BaseMessage], add_messages]
-    synth_input: SynthesizerInput
+    synth_input: Annotated[SynthesizerInput, merge_synth_inputs]
     router_decision: Optional["RouterDecision"]

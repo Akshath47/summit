@@ -134,6 +134,10 @@ def update_todos(state: state_definitions.GlobalState, config: RunnableConfig, s
     # Get the user ID from the config
     configurable = configuration.Configuration.from_runnable_config(config)
     user_id = configurable.user_id
+    
+    # Validate user_id is not empty to prevent InvalidNamespaceError
+    if not user_id or user_id.strip() == "":
+        user_id = "default-user"
 
     # Define namespace for todos
     namespace = ("todo", user_id)
@@ -148,10 +152,25 @@ def update_todos(state: state_definitions.GlobalState, config: RunnableConfig, s
     TRUSTCALL_INSTRUCTION_FORMATTED = prompts.TRUSTCALL_INSTRUCTION.format(
         time=datetime.now().isoformat()
     )
+    
+    # Filter out ToolMessages that don't have corresponding tool_calls to prevent API errors
+    filtered_messages = []
+    for i, msg in enumerate(state["messages"][:-1]):
+        if hasattr(msg, 'type') and msg.type == 'tool':
+            # Check if previous message has tool_calls
+            if i > 0:
+                prev_msg = state["messages"][i-1]
+                tool_calls = getattr(prev_msg, 'tool_calls', None)
+                if tool_calls:
+                    filtered_messages.append(msg)
+            # Skip ToolMessages without corresponding tool_calls
+        else:
+            filtered_messages.append(msg)
+    
     updated_messages = list(
         merge_message_runs(
             messages=[SystemMessage(content=TRUSTCALL_INSTRUCTION_FORMATTED)]
-            + state["messages"][:-1]
+            + filtered_messages
         )
     )
 
@@ -192,7 +211,8 @@ def update_todos(state: state_definitions.GlobalState, config: RunnableConfig, s
 
     # Confirmation back to Conversation Agent
     last_message = state["messages"][-1]
-    tool_call_id = getattr(last_message, 'tool_calls', [{}])[0].get('id', 'default_id')
+    tool_calls = getattr(last_message, 'tool_calls', None) or []
+    tool_call_id = tool_calls[0].get('id', 'default_id') if tool_calls else 'default_id'
 
     # Merge synthesizer input
     new_synth_input = state["synth_input"].model_copy(update={"updated_task_ids": state["synth_input"].updated_task_ids + updated_task_ids})
@@ -217,6 +237,10 @@ def update_profile(state: state_definitions.GlobalState, config: RunnableConfig,
     # Get the user ID from the config
     configurable = configuration.Configuration.from_runnable_config(config)
     user_id = configurable.user_id
+    
+    # Validate user_id is not empty to prevent InvalidNamespaceError
+    if not user_id or user_id.strip() == "":
+        user_id = "default-user"
 
     # Define namespace for profile
     namespace = ("profile", user_id)
@@ -234,10 +258,25 @@ def update_profile(state: state_definitions.GlobalState, config: RunnableConfig,
     TRUSTCALL_INSTRUCTION_FORMATTED = prompts.TRUSTCALL_INSTRUCTION.format(
         time=datetime.now().isoformat()
     )
+    
+    # Filter out ToolMessages that don't have corresponding tool_calls to prevent API errors
+    filtered_messages = []
+    for i, msg in enumerate(state["messages"][:-1]):
+        if hasattr(msg, 'type') and msg.type == 'tool':
+            # Check if previous message has tool_calls
+            if i > 0:
+                prev_msg = state["messages"][i-1]
+                tool_calls = getattr(prev_msg, 'tool_calls', None)
+                if tool_calls:
+                    filtered_messages.append(msg)
+            # Skip ToolMessages without corresponding tool_calls
+        else:
+            filtered_messages.append(msg)
+    
     updated_messages = list(
         merge_message_runs(
             messages=[SystemMessage(content=TRUSTCALL_INSTRUCTION_FORMATTED)]
-            + state["messages"][:-1]
+            + filtered_messages
         )
     )
 
@@ -271,7 +310,8 @@ def update_profile(state: state_definitions.GlobalState, config: RunnableConfig,
 
     # Confirmation back to Conversation Agent
     last_message = state["messages"][-1]
-    tool_call_id = getattr(last_message, "tool_calls", [{}])[0].get("id", "default_id")
+    tool_calls = getattr(last_message, "tool_calls", None) or []
+    tool_call_id = tool_calls[0].get("id", "default_id") if tool_calls else "default_id"
 
     # Merge synthesizer input
     new_synth_input = state["synth_input"].model_copy(update={"profile_changes": profile_changes})
@@ -296,6 +336,10 @@ def update_events(state: state_definitions.GlobalState, config: RunnableConfig, 
     # Get the user ID from the config
     configurable = configuration.Configuration.from_runnable_config(config)
     user_id = configurable.user_id
+    
+    # Validate user_id is not empty to prevent InvalidNamespaceError
+    if not user_id or user_id.strip() == "":
+        user_id = "default-user"
 
     # Define namespace for events
     namespace = ("event", user_id)
@@ -312,10 +356,25 @@ def update_events(state: state_definitions.GlobalState, config: RunnableConfig, 
     TRUSTCALL_INSTRUCTION_FORMATTED = prompts.TRUSTCALL_INSTRUCTION.format(
         time=datetime.now().isoformat()
     )
+    
+    # Filter out ToolMessages that don't have corresponding tool_calls to prevent API errors
+    filtered_messages = []
+    for i, msg in enumerate(state["messages"][:-1]):
+        if hasattr(msg, 'type') and msg.type == 'tool':
+            # Check if previous message has tool_calls
+            if i > 0:
+                prev_msg = state["messages"][i-1]
+                tool_calls = getattr(prev_msg, 'tool_calls', None)
+                if tool_calls:
+                    filtered_messages.append(msg)
+            # Skip ToolMessages without corresponding tool_calls
+        else:
+            filtered_messages.append(msg)
+    
     updated_messages = list(
         merge_message_runs(
             messages=[SystemMessage(content=TRUSTCALL_INSTRUCTION_FORMATTED)]
-            + state["messages"][:-1]
+            + filtered_messages
         )
     )
 
@@ -356,7 +415,8 @@ def update_events(state: state_definitions.GlobalState, config: RunnableConfig, 
 
     # Confirmation back to Conversation Agent
     last_message = state["messages"][-1]
-    tool_call_id = getattr(last_message, "tool_calls", [{}])[0].get("id", "default_id")
+    tool_calls = getattr(last_message, 'tool_calls', None) or []
+    tool_call_id = tool_calls[0].get('id', 'default_id') if tool_calls else 'default_id'
 
     # Merge synthesizer input
     new_synth_input = state["synth_input"].model_copy(update={"event_ids": state["synth_input"].event_ids + updated_event_ids})
@@ -380,11 +440,25 @@ def focus_coach(state: state_definitions.GlobalState, config: RunnableConfig, st
     configurable = configuration.Configuration.from_runnable_config(config)
     user_id = configurable.user_id
 
+    # Filter out ToolMessages that don't have corresponding tool_calls to prevent API errors
+    filtered_messages = []
+    for i, msg in enumerate(state["messages"][:-1]):
+        if hasattr(msg, 'type') and msg.type == 'tool':
+            # Check if previous message has tool_calls
+            if i > 0:
+                prev_msg = state["messages"][i-1]
+                tool_calls = getattr(prev_msg, 'tool_calls', None)
+                if tool_calls:
+                    filtered_messages.append(msg)
+            # Skip ToolMessages without corresponding tool_calls
+        else:
+            filtered_messages.append(msg)
+
     # Prepare messages
     updated_messages = list(
         merge_message_runs(
             messages=[SystemMessage(content=prompts.FOCUS_INSTRUCTION)]
-            + state["messages"][:-1]
+            + filtered_messages
         )
     )
 
@@ -435,6 +509,10 @@ def update_instructions(state: state_definitions.GlobalState, config: RunnableCo
     # Get the user ID from the config
     configurable = configuration.Configuration.from_runnable_config(config)
     user_id = configurable.user_id
+    
+    # Validate user_id is not empty to prevent InvalidNamespaceError
+    if not user_id or user_id.strip() == "":
+        user_id = "default-user"
 
     # Define namespace for instructions
     namespace = ("instructions", user_id)
@@ -464,7 +542,7 @@ def update_instructions(state: state_definitions.GlobalState, config: RunnableCo
     # Confirm back to Conversation Agent
     last_message = state["messages"][-1]
     tool_calls = getattr(last_message, "tool_calls", None) or []
-    tool_call_id = tool_calls[0]["id"] if tool_calls else "default_id"
+    tool_call_id = tool_calls[0].get("id", "default_id") if tool_calls else "default_id"
     
     return {
         "messages": [

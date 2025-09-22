@@ -16,6 +16,9 @@ class Configuration(BaseModel):
         Extracts Configuration from a RunnableConfig object.
         Falls back to defaults if values are missing.
         """
-        user_id = config.get("configurable", {}).get("user_id", "default-user")
-        timezone = config.get("configurable", {}).get("timezone", "UTC")
+        configurable = config.get("configurable", {})
+        user_id_raw = configurable.get("user_id")
+        user_id = user_id_raw if user_id_raw else "default-user"
+        timezone = configurable.get("timezone", "UTC")
+        
         return cls(user_id=user_id, timezone=timezone)
