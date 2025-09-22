@@ -100,11 +100,20 @@ def conversation_agent(state: state_definitions.GlobalState, config: RunnableCon
         )
     )
     router_instruction = SystemMessage(content=prompts.ROUTER_INSTRUCTION)
-    last_message = state["messages"][-1] if state["messages"] else HumanMessage(content="")
+    # Smart context detection: check if previous turn was a clarification/reply
+    messages_to_use = []
+    if (len(state["messages"]) >= 3 and
+        isinstance(state["messages"][-2], AIMessage) and
+        getattr(state.get("router_decision"), "disposition", None) in {"clarify"}):
+        # Include last 3 messages: original user query, AI clarification, user response
+        messages_to_use = state["messages"][-3:]
+    else:
+        # Normal case: just the latest message
+        messages_to_use = [state["messages"][-1]] if state["messages"] else [HumanMessage(content="")]
 
-    # Ask LLM for routing decision (LLM-first policy)
+    # Ask LLM for routing decision with appropriate context (LLM-first policy)
     decision_model = llm.with_structured_output(state_definitions.RouterDecision)
-    decision = decision_model.invoke([router_system, router_instruction, last_message])
+    decision = decision_model.invoke([router_system, router_instruction] + messages_to_use)
 
     # Map targets to node names
     target_to_node = {
