@@ -163,23 +163,67 @@ class SynthesizerInput(BaseModel):
     updated_task_ids: List[str] = Field(default_factory=list)   # Which tasks got created/updated
     event_ids: List[str] = Field(default_factory=list)          # Which events were created/updated
     conflict_ids: List[str] = Field(default_factory=list)       # Events in conflict (if any)
-    profile_changes: Optional[dict] = None 
+    profile_changes: Optional[dict] = None
+    instructions_updated: bool = False                           # Whether instructions were updated
     suggestion: Optional[str] = None   # Next action
-    motivation: Optional[str] = None   
+    motivation: Optional[str] = None
 
 
 def merge_synth_inputs(left: SynthesizerInput, right: SynthesizerInput) -> SynthesizerInput:
     """
     Custom reducer to merge multiple SynthesizerInput updates from concurrent agents.
+    If right is empty (fresh state from conversation_agent), use right to clear accumulated state.
     """
-    return SynthesizerInput(
-        updated_task_ids=left.updated_task_ids + right.updated_task_ids,
-        event_ids=left.event_ids + right.event_ids,
-        conflict_ids=left.conflict_ids + right.conflict_ids,
-        profile_changes=right.profile_changes or left.profile_changes,
-        suggestion=right.suggestion or left.suggestion,
-        motivation=right.motivation or left.motivation,
+    # DEBUG: Log merge operation
+    print(f"[DEBUG] merge_synth_inputs called:")
+    print(f"  LEFT - task_ids: {len(left.updated_task_ids)}, event_ids: {len(left.event_ids)}, conflict_ids: {len(left.conflict_ids)}")
+    print(f"  RIGHT - task_ids: {len(right.updated_task_ids)}, event_ids: {len(right.event_ids)}, conflict_ids: {len(right.conflict_ids)}")
+    
+    # Check if right is a fresh/empty state (all default values) - this indicates conversation_agent clearing
+    right_is_empty = (
+        not right.updated_task_ids and
+        not right.event_ids and
+        not right.conflict_ids and
+        right.profile_changes is None and
+        not right.instructions_updated and
+        right.suggestion is None and
+        right.motivation is None
     )
+    
+    # Check if left is a fresh/empty state (all default values)
+    left_is_empty = (
+        not left.updated_task_ids and
+        not left.event_ids and
+        not left.conflict_ids and
+        left.profile_changes is None and
+        not left.instructions_updated and
+        left.suggestion is None and
+        left.motivation is None
+    )
+    
+    print(f"  LEFT_IS_EMPTY: {left_is_empty}, RIGHT_IS_EMPTY: {right_is_empty}")
+    
+    if right_is_empty:
+        # Right is fresh/empty (from conversation_agent clearing) - use it to reset state
+        print(f"  RESULT: Using right (fresh state) to clear accumulated data")
+        return right
+    elif left_is_empty:
+        # Left is empty, right has data - use right's values
+        print(f"  RESULT: Using right values (left was empty)")
+        return right
+    else:
+        # Both have data - normal merge for concurrent updates within the same run
+        result = SynthesizerInput(
+            updated_task_ids=left.updated_task_ids + right.updated_task_ids,
+            event_ids=left.event_ids + right.event_ids,
+            conflict_ids=left.conflict_ids + right.conflict_ids,
+            profile_changes=right.profile_changes or left.profile_changes,
+            instructions_updated=left.instructions_updated or right.instructions_updated,
+            suggestion=right.suggestion or left.suggestion,
+            motivation=right.motivation or left.motivation,
+        )
+        print(f"  RESULT: Merged - task_ids: {len(result.updated_task_ids)}, event_ids: {len(result.event_ids)}")
+        return result
 
 
 # ---------------------------------------------------------------------

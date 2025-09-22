@@ -48,8 +48,17 @@ def conversation_agent(state: state_definitions.GlobalState, config: RunnableCon
     Parses user message, decides which agents to invoke, and clears synth_input for fresh run.
     """
 
+    # DEBUG: Log current synth_input state before clearing
+    current_synth = state.get("synth_input")
+    if current_synth:
+        print(f"[DEBUG] conversation_agent - BEFORE clearing:")
+        print(f"  updated_task_ids: {len(current_synth.updated_task_ids)} items")
+        print(f"  event_ids: {len(current_synth.event_ids)} items")
+        print(f"  conflict_ids: {len(current_synth.conflict_ids)} items")
+    
     # Clear synthesizer input at the start of every run
     synth_input = state_definitions.SynthesizerInput()
+    print(f"[DEBUG] conversation_agent - AFTER clearing: created fresh SynthesizerInput")
 
     # Get the user ID from the config
     configurable = configuration.Configuration.from_runnable_config(config)
@@ -130,6 +139,14 @@ def update_todos(state: state_definitions.GlobalState, config: RunnableConfig, s
     Task Manager Agent node.
     Reflects on conversation, updates ToDos in persistent memory, and confirms changes.
     """
+
+    # DEBUG: Log received synth_input state
+    current_synth = state.get("synth_input")
+    if current_synth:
+        print(f"[DEBUG] update_todos - RECEIVED state:")
+        print(f"  updated_task_ids: {len(current_synth.updated_task_ids)} items: {current_synth.updated_task_ids}")
+        print(f"  event_ids: {len(current_synth.event_ids)} items: {current_synth.event_ids}")
+        print(f"  conflict_ids: {len(current_synth.conflict_ids)} items: {current_synth.conflict_ids}")
 
     # Get the user ID from the config
     configurable = configuration.Configuration.from_runnable_config(config)
@@ -214,8 +231,12 @@ def update_todos(state: state_definitions.GlobalState, config: RunnableConfig, s
     tool_calls = getattr(last_message, 'tool_calls', None) or []
     tool_call_id = tool_calls[0].get('id', 'default_id') if tool_calls else 'default_id'
 
-    # Merge synthesizer input
-    new_synth_input = state["synth_input"].model_copy(update={"updated_task_ids": state["synth_input"].updated_task_ids + updated_task_ids})
+    # Create fresh synthesizer input with only new task IDs (merge function will combine with other nodes)
+    new_synth_input = state_definitions.SynthesizerInput(updated_task_ids=updated_task_ids)
+    
+    # DEBUG: Log what we're returning
+    print(f"[DEBUG] update_todos - RETURNING:")
+    print(f"  updated_task_ids: {len(new_synth_input.updated_task_ids)} items: {new_synth_input.updated_task_ids}")
 
     return {
         "messages": [
@@ -313,8 +334,8 @@ def update_profile(state: state_definitions.GlobalState, config: RunnableConfig,
     tool_calls = getattr(last_message, "tool_calls", None) or []
     tool_call_id = tool_calls[0].get("id", "default_id") if tool_calls else "default_id"
 
-    # Merge synthesizer input
-    new_synth_input = state["synth_input"].model_copy(update={"profile_changes": profile_changes})
+    # Create fresh synthesizer input with only profile changes (merge function will combine with other nodes)
+    new_synth_input = state_definitions.SynthesizerInput(profile_changes=profile_changes)
 
     return {
         "messages": [
@@ -418,8 +439,8 @@ def update_events(state: state_definitions.GlobalState, config: RunnableConfig, 
     tool_calls = getattr(last_message, 'tool_calls', None) or []
     tool_call_id = tool_calls[0].get('id', 'default_id') if tool_calls else 'default_id'
 
-    # Merge synthesizer input
-    new_synth_input = state["synth_input"].model_copy(update={"event_ids": state["synth_input"].event_ids + updated_event_ids})
+    # Create fresh synthesizer input with only new event IDs (merge function will combine with other nodes)
+    new_synth_input = state_definitions.SynthesizerInput(event_ids=updated_event_ids)
 
     return {
         "messages": [
@@ -491,8 +512,11 @@ def focus_coach(state: state_definitions.GlobalState, config: RunnableConfig, st
     else:
         content = {"suggestion": None, "motivation": None}
 
-    # Ensure required list fields are always lists (not None)
-    new_synth_input = state["synth_input"].model_copy(update=content)
+    # Create fresh synthesizer input with only focus content (merge function will combine with other nodes)
+    new_synth_input = state_definitions.SynthesizerInput(
+        suggestion=content.get("suggestion"),
+        motivation=content.get("motivation")
+    )
 
     return {
         "messages": [],
@@ -551,7 +575,7 @@ def update_instructions(state: state_definitions.GlobalState, config: RunnableCo
                 tool_call_id=tool_call_id,
             )
         ],
-        "synth_input": state["synth_input"]
+        "synth_input": state_definitions.SynthesizerInput(instructions_updated=True)
     }
 
 
@@ -561,6 +585,14 @@ def response_synthesizer(
     store: BaseStore,
 ):
     """Use the LLM to synthesize a natural-language response for the user."""
+
+    # DEBUG: Log what response_synthesizer receives
+    current_synth = state.get("synth_input")
+    if current_synth:
+        print(f"[DEBUG] response_synthesizer - RECEIVED state:")
+        print(f"  updated_task_ids: {len(current_synth.updated_task_ids)} items: {current_synth.updated_task_ids}")
+        print(f"  event_ids: {len(current_synth.event_ids)} items: {current_synth.event_ids}")
+        print(f"  conflict_ids: {len(current_synth.conflict_ids)} items: {current_synth.conflict_ids}")
 
     configurable = configuration.Configuration.from_runnable_config(config)
     user_id = configurable.user_id
@@ -585,22 +617,60 @@ def response_synthesizer(
         "motivation": state["synth_input"].motivation,
     }
 
-    # Build input context
+    # Build input context with better structure
+    has_tasks = len(todos) > 0
+    has_events = len(events) > 0
+    has_profile_update = state["synth_input"].profile_changes is not None
+    has_instructions_update = getattr(state["synth_input"], "instructions_updated", False)
+    has_focus = focus["suggestion"] is not None
+    
     context = {
-        "tasks": [t.get("task", "a task") for t in todos],
-        "events": [
-            {"title": e.get("title", "an event"), "time": e.get("time")}
-            for e in events
-        ],
+        "tasks_added": len([t for t in todos if t]) if has_tasks else 0,
+        "task_details": [t.get("task", "a task") for t in todos] if has_tasks else [],
+        "events_added": len([e for e in events if e]) if has_events else 0,
+        "event_details": [{"title": e.get("title", "an event"), "time": e.get("time")} for e in events] if has_events else [],
         "conflicts": len(conflicts),
-        "focus": focus,
+        "profile_updated": has_profile_update,
+        "instructions_updated": has_instructions_update,
+        "focus_suggestion": focus["suggestion"] if has_focus else None,
+        "focus_motivation": focus["motivation"] if has_focus else None,
     }
 
-    # Call LLM
+    # Build concise context summary for the LLM
+    parts = []
+    if context["tasks_added"] > 0:
+        tasks_preview = ", ".join(context["task_details"][:3])
+        parts.append(f"Tasks: {context['tasks_added']} updated ({tasks_preview})")
+    if context["events_added"] > 0:
+        parts.append(f"Events: {context['events_added']} updated")
+    if context["profile_updated"]:
+        parts.append("Profile updated")
+    if context["instructions_updated"]:
+        parts.append("Instructions updated")
+    if context["conflicts"] > 0:
+        parts.append(f"Conflicts: {context['conflicts']}")
+    if context["focus_suggestion"]:
+        mot = f" — {context['focus_motivation']}" if context["focus_motivation"] else ""
+        parts.append(f"Focus: {context['focus_suggestion']}{mot}")
+    context_text = "; ".join(parts) if parts else "No structured updates this turn."
+    
+    # Find the latest human message to ground the reply
+    last_user_content = ""
+    for m in reversed(state["messages"]):
+        if isinstance(m, HumanMessage):
+            last_user_content = m.content
+            break
+    
+    # DEBUG: Log synthesizer grounding inputs
+    print(f"[DEBUG] response_synthesizer - context_text: {context_text}")
+    print(f"[DEBUG] response_synthesizer - last_user_content: {last_user_content[:200]}{'...' if len(last_user_content) > 200 else ''}")
+    
+    # Call LLM with grounded prompt
     reply = llm.invoke(
         [
             SystemMessage(content=prompts.SYNTHESIZER_INSTRUCTION),
-            HumanMessage(content=f"Here are the updates: {context}")
+            SystemMessage(content=f"Context: {context_text}"),
+            HumanMessage(content=f"User message: {last_user_content}")
         ]
     ).content
 
