@@ -30,7 +30,7 @@ from langgraph.graph import END, MessagesState, START, StateGraph
 # ---------------------------------------------------------------------
 
 # LLM setup
-llm = ChatOpenAI(model="gpt-4o", temperature=0)
+llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 
 # Memory management
 store = InMemoryStore()
