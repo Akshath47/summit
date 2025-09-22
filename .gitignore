@@ -2,3 +2,29 @@
 .vscode/ 
 summit_venv/
 src/support/__pycache__/
+src/graph/__pycache__/
+
+# Package metadata (from pip install -e .)
+*.egg-info/
+summit.egg-info/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+build/
+dist/
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE and OS files
+.idea/
+.DS_Store
+
+.langgraph_api
