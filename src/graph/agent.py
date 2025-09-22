@@ -134,6 +134,31 @@ Here are the current user-specified preferences (may be empty if none exist):
 Always respond conversationally, then call tools when needed.
 """
 
+# Router instruction for LLM-first dispatch
+ROUTER_INSTRUCTION = """
+You are the routing brain for a multi-agent assistant. Decide how to handle the latest user message.
+
+Return a decision with fields:
+- disposition: one of ["reply","clarify","dispatch"]
+- targets: any of ["todo","event","profile","instructions","focus"] when dispatching; otherwise []
+- conversational_reply: a concise, friendly message (required for reply and clarify; for dispatch a short acknowledgment like "On it — working on that now." is acceptable)
+- rationale: brief reasoning (optional)
+
+Policy:
+- Favor helping. Infer intents from natural language; no explicit commands required.
+- Ask at most one short clarification question only if a critical piece is missing.
+- Allow multi-intent fan-out (e.g., add task + schedule + instruction update).
+- Do not include structured payloads; downstream agents will extract details from the conversation history.
+
+Examples:
+- "remind me to send the report by Friday morning" -> {"disposition":"dispatch","targets":["todo","event"],"conversational_reply":"On it — working on that now."}
+- "call me Jay from now on" -> {"disposition":"dispatch","targets":["profile"],"conversational_reply":"On it — working on that now."}
+- "always ask before adding anything to my list" -> {"disposition":"dispatch","targets":["instructions"],"conversational_reply":"On it — working on that now."}
+- "i’m exhausted, what should I do now?" -> {"disposition":"dispatch","targets":["focus"],"conversational_reply":"On it — working on that now."}
+- "i finished the email to Bob" -> {"disposition":"dispatch","targets":["todo"],"conversational_reply":"On it — working on that now."}
+- "schedule time tomorrow afternoon to prep slides" -> if time unclear: {"disposition":"clarify","targets":[],"conversational_reply":"What time tomorrow afternoon should I block for prep?"}
+- "what are you up to?" -> {"disposition":"reply","targets":[],"conversational_reply":"Just here to help. How’s your day going?"}
+"""
 
 # Focus Coach Agent instructions
 FOCUS_INSTRUCTION = """Reflect on the following interaction.
@@ -203,24 +228,60 @@ def conversation_agent(state: state_definitions.GlobalState, config: RunnableCon
     else:
         instructions = ""
 
-    # For now, send to all agents as per plan
-    # TODO: Implement LLM-based routing based on message content
-    agent_state = state_definitions.GlobalState(
-        messages=state["messages"],
-        synth_input=synth_input
+    # Build router prompt
+    router_system = SystemMessage(
+        content=MODEL_SYSTEM_MESSAGE.format(
+            user_profile=user_profile or "",
+            todo=todo or "",
+            events=event or "",
+            instructions=instructions or "",
+        )
     )
+    router_instruction = SystemMessage(content=ROUTER_INSTRUCTION)
+    last_message = state["messages"][-1] if state["messages"] else HumanMessage(content="")
 
-    return [
-        Send("update_todos", agent_state),
-        Send("update_events", agent_state),
-        Send("update_profile", agent_state),
-        Send("focus_coach", agent_state),
-        Send("update_instructions", agent_state),
-    ]
+    # Ask LLM for routing decision (LLM-first policy)
+    decision_model = llm.with_structured_output(state_definitions.RouterDecision)
+    decision = decision_model.invoke([router_system, router_instruction, last_message])
 
+    # Map targets to node names
+    target_to_node = {
+        "todo": "update_todos",
+        "event": "update_events",
+        "profile": "update_profile",
+        "instructions": "update_instructions",
+        "focus": "focus_coach",
+    }
 
+    # Prepare fan-out sends if dispatching
+    if getattr(decision, "disposition", None) == "dispatch":
+        sends = []
+        for t in getattr(decision, "targets", []) or []:
+            node_name = target_to_node.get(t)
+            if node_name:
+                sends.append(
+                    Send(
+                        node_name,
+                        state_definitions.GlobalState(
+                            messages=state["messages"],
+                            synth_input=synth_input
+                        ),
+                    )
+                )
 
+        # Return short acknowledgment now; final reply comes from response_synthesizer
+        ack = getattr(decision, "conversational_reply", None) or "On it — working on that now."
+        return {
+            "messages": [AIMessage(content=ack)],
+            "synth_input": synth_input,
+        } | {"__sends__": sends}
 
+    # Reply or Clarify: send friendly message, no dispatch
+    reply_text = getattr(decision, "conversational_reply", None) or "Okay."
+    return {
+        "messages": [AIMessage(content=reply_text)],
+        "synth_input": synth_input,
+    } | {"__sends__": []}
 
 
 def update_todos(state: state_definitions.GlobalState, config: RunnableConfig, store: BaseStore):
@@ -635,3 +696,4 @@ def response_synthesizer(
 # TODO : Complete conversation agent node with LLM-based routing
 # TODO : Create routing function and logic
 # TODO : Update the conversation agent to call update instructions agent whenever fit
+# TODO : Client side streaming of messages to get partial updates on tool calls

@@ -14,6 +14,7 @@ from typing import Optional, List, Literal, Annotated
 from datetime import datetime
 import uuid
 from langchain_core.messages import BaseMessage
+from typing import TypedDict
 
 
 # ---------------------------------------------------------------------
@@ -166,7 +167,36 @@ class SynthesizerInput(BaseModel):
     suggestion: Optional[str] = None   # Next action
     motivation: Optional[str] = None   
 
-from typing import TypedDict
+
+# ---------------------------------------------------------------------
+# Router Decision (LLM-first routing contract)
+# ---------------------------------------------------------------------
+
+class RouterDecision(BaseModel):
+    """
+    Decision returned by the Conversation Agent's router LLM.
+
+    - disposition: how to handle the turn
+      * "reply"     -> return a friendly conversational reply, no dispatch
+      * "clarify"   -> ask 1 concise question to fill a critical gap, no dispatch
+      * "dispatch"  -> fan-out to one or more downstream agents; a short ack is okay here
+    - targets: which agents to dispatch when disposition == "dispatch"
+    - conversational_reply: friendly message to send immediately
+      * for "reply" / "clarify": the actual reply/question
+      * for "dispatch": a short acknowledgment like "On it — working on that now."
+    - rationale: optional brief reasoning (for trace/debug)
+    """
+    disposition: Literal["reply", "clarify", "dispatch"]
+    targets: List[Literal["todo", "event", "profile", "instructions", "focus"]] = Field(default_factory=list)
+    conversational_reply: str = Field(
+        ...,
+        description="Friendly message to send to the user. For dispatch, use a brief acknowledgment."
+    )
+
+
+# ---------------------------------------------------------------------
+# Global State combining Messages and SynthesizerInput
+# ---------------------------------------------------------------------
 
 class GlobalState(TypedDict):
     """
