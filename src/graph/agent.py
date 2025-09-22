@@ -165,8 +165,8 @@ def update_todos(state: state_definitions.GlobalState, config: RunnableConfig, s
         [(item.key, "ToDo", item.value) for item in existing_items] if existing_items else None
     )
 
-    # Merge the chat history and the instruction
-    TRUSTCALL_INSTRUCTION_FORMATTED = prompts.TRUSTCALL_INSTRUCTION.format(
+    # Merge the chat history and the instruction (ToDo-specific, ensures 'solutions' populated)
+    TODO_TRUSTCALL_INSTRUCTION_FORMATTED = prompts.TODO_TRUSTCALL_INSTRUCTION.format(
         time=datetime.now().isoformat()
     )
     
@@ -186,7 +186,7 @@ def update_todos(state: state_definitions.GlobalState, config: RunnableConfig, s
     
     updated_messages = list(
         merge_message_runs(
-            messages=[SystemMessage(content=TRUSTCALL_INSTRUCTION_FORMATTED)]
+            messages=[SystemMessage(content=TODO_TRUSTCALL_INSTRUCTION_FORMATTED)]
             + filtered_messages
         )
     )
@@ -204,12 +204,55 @@ def update_todos(state: state_definitions.GlobalState, config: RunnableConfig, s
         {"messages": updated_messages, "existing": existing_memories}
     )
 
-    # Save save the memories from Trustcall to the store
+    # Ensure 'solutions' is populated for created/updated tasks as a fallback (operate on payload dicts, not model attrs)
+    import json
+    normalized_payloads = []
     for r, rmeta in zip(result["responses"], result["response_metadata"]):
+        # Normalize to dict payload
+        if hasattr(r, "model_dump"):
+            payload = r.model_dump(mode="json")
+        elif isinstance(r, dict):
+            payload = r
+        else:
+            payload = {}
+        solutions = payload.get("solutions") or []
+        if not solutions:
+            task_text = payload.get("task")
+            steps: list[str] = []
+            if task_text:
+                # Ask LLM for concrete micro-steps (prefer JSON array)
+                step_prompt = (
+                    "Generate 3-6 concrete, bite-sized, action-oriented micro-steps (5-20 minutes each) "
+                    f"to progress the task: '{task_text}'. Return ONLY a JSON array of strings."
+                )
+                raw = llm.invoke([SystemMessage(content=step_prompt)]).content
+                steps_list: list = []
+                if isinstance(raw, str):
+                    try:
+                        parsed = json.loads(raw)
+                        if isinstance(parsed, list):
+                            steps_list = parsed
+                    except Exception:
+                        # Fallback: parse line-by-line if not valid JSON
+                        steps_list = [s.strip() for s in raw.splitlines() if s and s.strip()]
+                elif isinstance(raw, list):
+                    steps_list = [str(x) for x in raw]
+                steps = [str(s).strip().lstrip("-").strip() for s in steps_list if str(s).strip()][:6]
+            if not steps:
+                steps = [
+                    "Outline the first 3 bullet points",
+                    "Draft a rough version for 10 minutes",
+                    "List blockers or missing info",
+                ]
+            payload["solutions"] = steps
+        normalized_payloads.append((payload, rmeta))
+
+    # Save the memories from Trustcall to the store (with ensured 'solutions')
+    for payload, rmeta in normalized_payloads:
         store.put(
             namespace,
             rmeta.get("json_doc_id", str(uuid.uuid4())),
-            r.model_dump(mode="json"),
+            payload,
         )
 
     # Collect updated task IDs for synthesizer
@@ -461,6 +504,53 @@ def focus_coach(state: state_definitions.GlobalState, config: RunnableConfig, st
     configurable = configuration.Configuration.from_runnable_config(config)
     user_id = configurable.user_id
 
+    # Load current ToDos and Events for grounding
+    todo_items = store.search(("todo", user_id)) or []
+    event_items = store.search(("event", user_id)) or []
+
+    # Build compact catalogs for tasks/events
+    def _safe_str(val):
+        try:
+            return val.isoformat() if hasattr(val, "isoformat") else str(val)
+        except Exception:
+            return str(val)
+
+    todo_lines = []
+    for item in todo_items:
+        v = item.value if isinstance(item.value, dict) else {}
+        tid = v.get("id")
+        task = v.get("task")
+        priority = v.get("priority")
+        difficulty = v.get("difficulty")
+        ttc = v.get("time_to_complete")
+        deadline = v.get("deadline")
+        status = v.get("status")
+        solutions = v.get("solutions") or []
+        solutions_preview = "; ".join((s or "") for s in solutions[:3])
+        todo_lines.append(
+            f"- id={tid}; task={task}; priority={priority}; difficulty={difficulty}; ttc={ttc}; deadline={_safe_str(deadline) if deadline else ''}; status={status}; solutions={solutions_preview}"
+        )
+
+    event_lines = []
+    for item in event_items:
+        v = item.value if isinstance(item.value, dict) else {}
+        eid = v.get("id")
+        title = v.get("title")
+        time_val = v.get("time")
+        task_id = v.get("task_id")
+        event_lines.append(
+            f"- id={eid}; title={title}; time={_safe_str(time_val) if time_val else ''}; task_id={task_id}"
+        )
+
+    todo_catalog = "\n".join(todo_lines) if todo_lines else "None"
+    event_catalog = "\n".join(event_lines) if event_lines else "None"
+
+    # Format Focus system prompt with catalogs
+    focus_system = prompts.FOCUS_INSTRUCTION.format(
+        todo_catalog=todo_catalog,
+        event_catalog=event_catalog
+    )
+
     # Filter out ToolMessages that don't have corresponding tool_calls to prevent API errors
     filtered_messages = []
     for i, msg in enumerate(state["messages"][:-1]):
@@ -475,10 +565,10 @@ def focus_coach(state: state_definitions.GlobalState, config: RunnableConfig, st
         else:
             filtered_messages.append(msg)
 
-    # Prepare messages
+    # Prepare messages with grounded catalogs
     updated_messages = list(
         merge_message_runs(
-            messages=[SystemMessage(content=prompts.FOCUS_INSTRUCTION)]
+            messages=[SystemMessage(content=focus_system)]
             + filtered_messages
         )
     )
