@@ -649,15 +649,33 @@ def update_instructions(state: state_definitions.GlobalState, config: RunnableCo
         current_instructions="\n".join(current_instructions) if current_instructions else "None"
     )
 
+    # Filter out ToolMessages that don't have corresponding tool_calls to prevent API errors
+    filtered_messages = []
+    for i, msg in enumerate(state["messages"][:-1]):
+        if hasattr(msg, 'type') and msg.type == 'tool':
+            # Check if previous message has tool_calls
+            if i > 0:
+                prev_msg = state["messages"][i-1]
+                tool_calls = getattr(prev_msg, 'tool_calls', None)
+                if tool_calls:
+                    filtered_messages.append(msg)
+            # Skip ToolMessages without corresponding tool_calls
+        else:
+            filtered_messages.append(msg)
+    
+    updated_messages = list(
+        merge_message_runs(
+            messages=[SystemMessage(content=system_msg)]
+            + filtered_messages
+            + [HumanMessage(content="Please update the instructions based on this conversation")]
+        )
+    )
+
     # Bind instructions schema to the LLM
     instructions_model = llm.with_structured_output(state_definitions.Instructions)
 
     # Ask the model for updated instructions (schema-bound)
-    result = instructions_model.invoke(
-        [SystemMessage(content=system_msg)]
-        + state["messages"][:-1]
-        + [HumanMessage(content="Please update the instructions based on this conversation")]
-    )
+    result = instructions_model.invoke(updated_messages)
 
     # Save updated list directly
     store.put(namespace, "user_instructions", {"items": result.items})
